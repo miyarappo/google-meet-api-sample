@@ -38,15 +38,16 @@ export default function MeetingList({ onMeetingSelect }: MeetingListProps) {
     return new Date(dateString).toLocaleString('ja-JP')
   }
 
-  const getDuration = (start: string, end?: string) => {
-    if (!end) return '進行中'
+  const getFileSize = (size?: number) => {
+    if (!size) return '不明'
     
-    const startTime = new Date(start)
-    const endTime = new Date(end)
-    const diffMs = endTime.getTime() - startTime.getTime()
-    const minutes = Math.floor(diffMs / (1000 * 60))
-    
-    return `${minutes}分`
+    const mb = size / (1024 * 1024)
+    if (mb > 1) {
+      return `${mb.toFixed(1)} MB`
+    } else {
+      const kb = size / 1024
+      return `${kb.toFixed(1)} KB`
+    }
   }
 
   if (loading) {
@@ -108,14 +109,17 @@ export default function MeetingList({ onMeetingSelect }: MeetingListProps) {
               <div className="flex justify-between items-start">
                 <div className="flex-1">
                   <h3 className="font-semibold text-lg mb-2">
-                    {meeting.space?.meetingCode || meeting.conferenceRecordId}
+                    {meeting.name}
                   </h3>
                   <div className="space-y-1 text-sm text-gray-600">
-                    <p>開始時刻: {formatDate(meeting.startTime)}</p>
-                    {meeting.endTime && (
-                      <p>終了時刻: {formatDate(meeting.endTime)}</p>
+                    <p>作成日時: {formatDate(meeting.createdTime)}</p>
+                    {meeting.modifiedTime && (
+                      <p>最終更新: {formatDate(meeting.modifiedTime)}</p>
                     )}
-                    <p>時間: {getDuration(meeting.startTime, meeting.endTime)}</p>
+                    <p>ファイルサイズ: {getFileSize(meeting.size)}</p>
+                    {meeting.meetingCode && (
+                      <p>会議コード: <span className="font-mono">{meeting.meetingCode}</span></p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center text-blue-600">
@@ -125,10 +129,10 @@ export default function MeetingList({ onMeetingSelect }: MeetingListProps) {
                 </div>
               </div>
               
-              {meeting.space?.meetingUri && (
+              {meeting.webViewLink && (
                 <div className="mt-2">
                   <a
-                    href={meeting.space.meetingUri}
+                    href={meeting.webViewLink}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
@@ -137,7 +141,7 @@ export default function MeetingList({ onMeetingSelect }: MeetingListProps) {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                     </svg>
-                    会議に参加
+                    Google Drive で開く
                   </a>
                 </div>
               )}

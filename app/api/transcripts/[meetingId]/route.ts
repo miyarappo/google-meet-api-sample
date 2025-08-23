@@ -22,7 +22,7 @@ export async function GET(
     
     let result
     if (transcriptId) {
-      result = await meetAPI.getTranscript(meetingId, transcriptId)
+      result = await meetAPI.getTranscript(meetingId)
     } else {
       const transcripts = await meetAPI.getAllTranscripts(meetingId)
       result = transcripts.length > 0 ? transcripts[0] : null

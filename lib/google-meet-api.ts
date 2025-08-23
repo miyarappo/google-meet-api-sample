@@ -1,154 +1,174 @@
 import { google } from 'googleapis'
 
 export interface Meeting {
+  id: string
   name: string
-  conferenceRecordId: string
-  startTime: string
-  endTime?: string
-  space?: {
-    name: string
-    meetingCode?: string
-    meetingUri?: string
-  }
+  createdTime: string
+  modifiedTime?: string
+  size?: number
+  webViewLink?: string
+  meetingCode?: string
 }
 
 export interface Transcript {
+  id: string
   name: string
-  startTime: string
-  endTime: string
-  state: string
-  docsDestination?: {
-    document: string
-    exportUri?: string
-  }
-  entries?: TranscriptEntry[]
+  createdTime: string
+  modifiedTime?: string
+  size?: number
+  webViewLink?: string
+  downloadLink?: string
+  content?: string
 }
 
 export interface TranscriptEntry {
-  name: string
-  participant: {
-    signedinUser?: {
-      user: string
-      displayName: string
-    }
-    anonymousUser?: {
-      displayName: string
-    }
-    phoneUser?: {
-      displayName: string
-    }
-  }
-  words: TranscriptWord[]
-  startTime: string
-  endTime: string
-  languageCode: string
-}
-
-export interface TranscriptWord {
-  word: string
-  startTime: string
-  endTime: string
+  text: string
+  timestamp?: string
 }
 
 export class GoogleMeetAPI {
   private auth: InstanceType<typeof google.auth.OAuth2>
-  private meet: ReturnType<typeof google.meet>
+  private drive: ReturnType<typeof google.drive>
 
   constructor(accessToken: string) {
     this.auth = new google.auth.OAuth2()
     this.auth.setCredentials({ access_token: accessToken })
-    this.meet = google.meet({ version: 'v2', auth: this.auth })
+    this.drive = google.drive({ version: 'v3', auth: this.auth })
   }
 
   async getMeetings(): Promise<Meeting[]> {
     try {
-      console.log('Fetching conference records from Google Meet API...')
+      console.log('Fetching Google Meet files from Google Drive...')
       
-      // 実際のGoogle Meet API v2を使用してconferenceRecordsを取得
-      const response = await this.meet.conferenceRecords.list({
-        pageSize: 50,
-        // filter: 'space.meeting_code:*' // 必要に応じてフィルタを追加
+      // Google Drive から Google Meet で生成されたファイルを検索
+      const response = await this.drive.files.list({
+        q: "mimeType contains 'video' or name contains 'meeting' or name contains 'Meet' or name contains 'transcript'",
+        spaces: 'drive',
+        fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+        orderBy: 'createdTime desc',
+        pageSize: 50
       })
 
-      const conferences = response.data.conferenceRecords || []
-      console.log(`Found ${conferences.length} conference records`)
+      const files = response.data.files || []
+      console.log(`Found ${files.length} potential meeting files`)
 
-      return conferences.map((record) => ({
-        name: record.name || '',
-        conferenceRecordId: record.name?.split('/')[1] || '',
-        startTime: record.startTime || '',
-        endTime: record.endTime || undefined,
-        space: record.space ? {
-          name: ((record.space as unknown) as Record<string, unknown>).name as string || '',
-          meetingCode: ((record.space as unknown) as Record<string, unknown>).meetingCode as string | undefined,
-          meetingUri: ((record.space as unknown) as Record<string, unknown>).meetingUri as string | undefined
-        } : undefined
-      }))
+      // ファイル情報を会議情報に変換
+      const meetings: Meeting[] = []
+      const processedMeetings = new Set<string>()
+
+      for (const file of files) {
+        // ファイル名から会議コードを抽出（推定）
+        const meetingCode = this.extractMeetingCode(file.name || '')
+        const meetingKey = meetingCode || file.createdTime || file.id
+
+        // 重複を避ける
+        if (meetingKey && !processedMeetings.has(meetingKey)) {
+          processedMeetings.add(meetingKey)
+          
+          meetings.push({
+            id: file.id || '',
+            name: this.generateMeetingName(file.name || ''),
+            createdTime: file.createdTime || '',
+            modifiedTime: file.modifiedTime || undefined,
+            size: parseInt(file.size || '0'),
+            webViewLink: file.webViewLink || undefined,
+            meetingCode: meetingCode
+          })
+        }
+      }
+
+      return meetings
       
     } catch (error) {
-      console.error('Error fetching conference records:', error)
-      throw new Error(`Failed to fetch conference records: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      console.error('Error fetching Google Drive files:', error)
+      throw new Error(`Failed to fetch meeting files: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
-  async getTranscript(conferenceRecordId: string, transcriptId?: string): Promise<Transcript | null> {
+  private extractMeetingCode(fileName: string): string | undefined {
+    // ファイル名から会議コードのパターンを抽出
+    const patterns = [
+      /([a-z]{3}-[a-z]{4}-[a-z]{3})/i, // xxx-xxxx-xxx 形式
+      /meet\.google\.com\/([a-z\-]+)/i, // URL形式
+      /Meeting\s+([A-Z0-9\-]+)/i // Meeting XXX 形式
+    ]
+    
+    for (const pattern of patterns) {
+      const match = fileName.match(pattern)
+      if (match) {
+        return match[1]
+      }
+    }
+    
+    return undefined
+  }
+
+  private generateMeetingName(fileName: string): string {
+    // ファイル名から読みやすい会議名を生成
+    const cleanName = fileName
+      .replace(/\.(mp4|webm|txt|doc|docx)$/i, '')
+      .replace(/^(Meeting|Google Meet|Meet)[\s\-_]*/i, '')
+      .replace(/[\-_]/g, ' ')
+      .trim()
+    
+    return cleanName || 'Google Meet 会議'
+  }
+
+  async getTranscript(meetingId: string): Promise<Transcript | null> {
     try {
-      console.log(`Fetching transcripts for conference record: ${conferenceRecordId}`)
+      console.log(`Fetching transcript files for meeting: ${meetingId}`)
       
-      // 指定されたconferenceRecordのtranscriptsを取得
-      const transcriptsResponse = await this.meet.conferenceRecords.transcripts.list({
-        parent: `conferenceRecords/${conferenceRecordId}`
+      // Google Drive で文字起こしファイルを検索
+      const response = await this.drive.files.list({
+        q: `(name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document')`,
+        spaces: 'drive',
+        fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+        orderBy: 'createdTime desc',
+        pageSize: 20
       })
 
-      const transcripts = transcriptsResponse.data.transcripts || []
-      console.log(`Found ${transcripts.length} transcripts`)
+      const files = response.data.files || []
+      console.log(`Found ${files.length} potential transcript files`)
 
-      if (transcripts.length === 0) {
+      if (files.length === 0) {
         return null
       }
 
-      // 指定されたtranscriptId、または最初のtranscriptを使用
-      let selectedTranscript
-      if (transcriptId) {
-        selectedTranscript = transcripts.find((t) => 
-          t.name?.includes(transcriptId))
+      // 最初の文字起こしファイルを使用
+      const transcriptFile = files[0]
+      
+      let content = ''
+      try {
+        // ファイルの内容を取得
+        if (transcriptFile.mimeType === 'application/vnd.google-apps.document') {
+          // Google Docs の場合は export で取得
+          const exportResponse = await this.drive.files.export({
+            fileId: transcriptFile.id!,
+            mimeType: 'text/plain'
+          })
+          content = exportResponse.data as string
+        } else {
+          // テキストファイルの場合は直接取得
+          const fileResponse = await this.drive.files.get({
+            fileId: transcriptFile.id!,
+            alt: 'media'
+          })
+          content = fileResponse.data as string
+        }
+      } catch (contentError) {
+        console.log('Could not fetch file content:', contentError)
+        content = ''
       }
-      if (!selectedTranscript) {
-        selectedTranscript = transcripts[0]
-      }
-
-      if (!selectedTranscript) {
-        return null
-      }
-
-      console.log(`Selected transcript: ${selectedTranscript.name}`)
-
-      // transcript entriesを取得
-      const entriesResponse = await this.meet.conferenceRecords.transcripts.entries.list({
-        parent: selectedTranscript.name!,
-        pageSize: 100
-      })
-
-      const entries = entriesResponse.data.transcriptEntries || []
-      console.log(`Found ${entries.length} transcript entries`)
 
       return {
-        name: selectedTranscript.name || '',
-        startTime: selectedTranscript.startTime || '',
-        endTime: selectedTranscript.endTime || '',
-        state: selectedTranscript.state || '',
-        docsDestination: selectedTranscript.docsDestination ? {
-          document: selectedTranscript.docsDestination.document || '',
-          exportUri: selectedTranscript.docsDestination.exportUri || undefined
-        } : undefined,
-        entries: entries.map((entry) => ({
-          name: entry.name || '',
-          participant: entry.participant || {},
-          words: [], // Google Meet API の実際のスキーマでは words は別のリクエストで取得
-          startTime: entry.startTime || '',
-          endTime: entry.endTime || '',
-          languageCode: entry.languageCode || 'ja'
-        }))
+        id: transcriptFile.id || '',
+        name: transcriptFile.name || '',
+        createdTime: transcriptFile.createdTime || '',
+        modifiedTime: transcriptFile.modifiedTime || undefined,
+        size: parseInt(transcriptFile.size || '0'),
+        webViewLink: transcriptFile.webViewLink || undefined,
+        downloadLink: `https://drive.google.com/uc?id=${transcriptFile.id}`,
+        content: content
       }
       
     } catch (error) {
@@ -157,26 +177,33 @@ export class GoogleMeetAPI {
     }
   }
 
-  async getAllTranscripts(conferenceRecordId: string): Promise<Transcript[]> {
+  async getAllTranscripts(meetingId: string): Promise<Transcript[]> {
     try {
-      console.log(`Fetching all transcripts for conference record: ${conferenceRecordId}`)
+      console.log(`Fetching all transcript files for meeting: ${meetingId}`)
       
-      const transcriptsResponse = await this.meet.conferenceRecords.transcripts.list({
-        parent: `conferenceRecords/${conferenceRecordId}`
+      // Google Drive で文字起こしファイルを検索
+      const response = await this.drive.files.list({
+        q: `(name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document')`,
+        spaces: 'drive',
+        fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+        orderBy: 'createdTime desc',
+        pageSize: 10
       })
 
-      const transcripts = transcriptsResponse.data.transcripts || []
+      const files = response.data.files || []
       const results: Transcript[] = []
 
-      for (const transcript of transcripts) {
-        const transcriptName = transcript.name
-        if (transcriptName) {
-          const fullTranscript = await this.getTranscript(conferenceRecordId, 
-            transcriptName.split('/')[3]) // Extract transcript ID from name
-          if (fullTranscript) {
-            results.push(fullTranscript)
-          }
-        }
+      for (const file of files) {
+        results.push({
+          id: file.id || '',
+          name: file.name || '',
+          createdTime: file.createdTime || '',
+          modifiedTime: file.modifiedTime || undefined,
+          size: parseInt(file.size || '0'),
+          webViewLink: file.webViewLink || undefined,
+          downloadLink: `https://drive.google.com/uc?id=${file.id}`,
+          content: undefined // コンテンツは必要時に個別取得
+        })
       }
 
       return results
@@ -184,5 +211,31 @@ export class GoogleMeetAPI {
       console.error('Error fetching all transcripts:', error)
       throw new Error(`Failed to fetch transcripts: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
+  }
+
+  // 文字起こしテキストを解析してエントリに分割
+  parseTranscriptContent(content: string): TranscriptEntry[] {
+    if (!content) return []
+
+    const lines = content.split('\n').filter(line => line.trim())
+    const entries: TranscriptEntry[] = []
+
+    for (const line of lines) {
+      // タイムスタンプのパターンを探す
+      const timestampMatch = line.match(/^\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*(.+)$/)
+      
+      if (timestampMatch) {
+        entries.push({
+          text: timestampMatch[2].trim(),
+          timestamp: timestampMatch[1]
+        })
+      } else if (line.trim()) {
+        entries.push({
+          text: line.trim()
+        })
+      }
+    }
+
+    return entries
   }
 }

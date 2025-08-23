@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Meeting, Transcript, TranscriptEntry } from '@/lib/google-meet-api'
+import { Meeting, Transcript } from '@/lib/google-meet-api'
 
 interface TranscriptViewerProps {
   meeting: Meeting
@@ -18,7 +18,7 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
       setLoading(true)
       setError(null)
       
-      const response = await fetch(`/api/transcripts/${meeting.conferenceRecordId}`)
+      const response = await fetch(`/api/transcripts/${meeting.id}`)
       
       if (!response.ok) {
         if (response.status === 404) {
@@ -38,7 +38,7 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
 
   useEffect(() => {
     fetchTranscript()
-  }, [meeting.conferenceRecordId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [meeting.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatTime = (timeString: string) => {
     try {
@@ -53,40 +53,6 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
     }
   }
 
-  const getParticipantName = (entry: TranscriptEntry) => {
-    if (entry.participant.signedinUser) {
-      return entry.participant.signedinUser.displayName || 'ユーザー'
-    }
-    if (entry.participant.anonymousUser) {
-      return entry.participant.anonymousUser.displayName || '匿名ユーザー'
-    }
-    if (entry.participant.phoneUser) {
-      return entry.participant.phoneUser.displayName || '電話参加者'
-    }
-    return '不明な参加者'
-  }
-
-  const getWordsText = (entry: TranscriptEntry) => {
-    return entry.words?.map(word => word.word).join(' ') || ''
-  }
-
-  const getParticipantColor = (participantName: string) => {
-    const colors = [
-      'bg-blue-100 text-blue-800',
-      'bg-green-100 text-green-800',
-      'bg-purple-100 text-purple-800',
-      'bg-orange-100 text-orange-800',
-      'bg-pink-100 text-pink-800',
-      'bg-indigo-100 text-indigo-800'
-    ]
-    
-    const hash = participantName.split('').reduce((a, b) => {
-      a = ((a << 5) - a) + b.charCodeAt(0)
-      return a & a
-    }, 0)
-    
-    return colors[Math.abs(hash) % colors.length]
-  }
 
   if (loading) {
     return (
@@ -100,7 +66,7 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-2xl font-bold">文字起こし - {meeting.space?.meetingCode || meeting.conferenceRecordId}</h2>
+          <h2 className="text-2xl font-bold">文字起こし - {meeting.name}</h2>
         </div>
         
         <div className="flex justify-center items-center py-12">
@@ -123,7 +89,7 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-2xl font-bold">文字起こし - {meeting.space?.meetingCode || meeting.conferenceRecordId}</h2>
+          <h2 className="text-2xl font-bold">文字起こし - {meeting.name}</h2>
         </div>
         
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
@@ -151,7 +117,7 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-2xl font-bold">文字起こし - {meeting.space?.meetingCode || meeting.conferenceRecordId}</h2>
+          <h2 className="text-2xl font-bold">文字起こし - {meeting.name}</h2>
         </div>
         
         <button
@@ -169,30 +135,45 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
         <div className="mb-4 p-4 bg-gray-100 rounded-lg">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <span className="font-semibold">開始時刻:</span>
+              <span className="font-semibold">作成日時:</span>
               <br />
-              {transcript.startTime ? formatTime(transcript.startTime) : '-'}
+              {transcript.createdTime ? formatTime(transcript.createdTime) : '-'}
             </div>
             <div>
-              <span className="font-semibold">終了時刻:</span>
+              <span className="font-semibold">最終更新:</span>
               <br />
-              {transcript.endTime ? formatTime(transcript.endTime) : '-'}
+              {transcript.modifiedTime ? formatTime(transcript.modifiedTime) : '-'}
             </div>
             <div>
-              <span className="font-semibold">状態:</span>
+              <span className="font-semibold">ファイルサイズ:</span>
               <br />
-              {transcript.state || '-'}
+              {transcript.size ? `${(transcript.size / 1024).toFixed(1)} KB` : '-'}
             </div>
             <div>
-              <span className="font-semibold">発言数:</span>
+              <span className="font-semibold">形式:</span>
               <br />
-              {transcript.entries?.length || 0}件
+              文字起こし
             </div>
           </div>
+          {transcript.webViewLink && (
+            <div className="mt-3">
+              <a
+                href={transcript.webViewLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                Google Drive で開く
+              </a>
+            </div>
+          )}
         </div>
       )}
 
-      {!transcript || !transcript.entries || transcript.entries.length === 0 ? (
+      {!transcript || !transcript.content ? (
         <div className="text-center py-12 text-gray-500">
           <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -200,41 +181,13 @@ export default function TranscriptViewer({ meeting, onBack }: TranscriptViewerPr
           <p>この会議に文字起こしが見つかりません</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {transcript.entries.map((entry, index) => {
-            const participantName = getParticipantName(entry)
-            const text = getWordsText(entry)
-            
-            if (!text.trim()) return null
-            
-            return (
-              <div key={index} className="bg-white border rounded-lg p-4 shadow-sm">
-                <div className="flex items-start space-x-3">
-                  <div className="flex-shrink-0">
-                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getParticipantColor(participantName)}`}>
-                      {participantName}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-2 mb-2">
-                      <span className="text-xs text-gray-500">
-                        {formatTime(entry.startTime)}
-                      </span>
-                      {entry.endTime && entry.endTime !== entry.startTime && (
-                        <>
-                          <span className="text-xs text-gray-400">-</span>
-                          <span className="text-xs text-gray-500">
-                            {formatTime(entry.endTime)}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    <p className="text-gray-900 leading-relaxed">{text}</p>
-                  </div>
-                </div>
-              </div>
-            )
-          })}
+        <div className="bg-white border rounded-lg p-6 shadow-sm">
+          <h3 className="text-lg font-semibold mb-4">文字起こし内容</h3>
+          <div className="prose prose-gray max-w-none">
+            <div className="whitespace-pre-wrap text-gray-900 leading-relaxed">
+              {transcript.content}
+            </div>
+          </div>
         </div>
       )}
     </div>
