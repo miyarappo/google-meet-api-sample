@@ -114,49 +114,193 @@ export class GoogleMeetAPI {
     return cleanName || 'Google Meet 会議'
   }
 
+  private extractBaseName(fileName: string): string {
+    // ファイル名から基本名を抽出（拡張子や余分な文字を除去）
+    return fileName
+      .replace(/\.(mp4|webm|txt|doc|docx|pdf)$/i, '')
+      .replace(/^(Meeting|Google Meet|Meet|Recording)[\s\-_]*/i, '')
+      .replace(/[\s\-_]+/g, ' ')
+      .split(' ')[0] // 最初の単語を取得
+      .trim()
+  }
+
   async getTranscript(meetingId: string): Promise<Transcript | null> {
     try {
       console.log(`Fetching transcript files for meeting: ${meetingId}`)
       
-      // Google Drive で文字起こしファイルを検索
-      const response = await this.drive.files.list({
-        q: `(name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document')`,
-        spaces: 'drive',
-        fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
-        orderBy: 'createdTime desc',
-        pageSize: 20
-      })
+      // まず会議ファイルの情報を取得
+      let meetingFile = null
+      try {
+        const meetingResponse = await this.drive.files.get({
+          fileId: meetingId,
+          fields: 'id,name,createdTime,parents,mimeType'
+        })
+        meetingFile = meetingResponse.data
+        console.log(`Meeting file found:`, {
+          id: meetingFile.id,
+          name: meetingFile.name,
+          mimeType: meetingFile.mimeType,
+          parents: meetingFile.parents,
+          createdTime: meetingFile.createdTime
+        })
+      } catch (error) {
+        console.log(`Meeting file not found: ${meetingId}`, error)
+      }
 
-      const files = response.data.files || []
-      console.log(`Found ${files.length} potential transcript files`)
+      // 複数の戦略で文字起こしファイルを検索
+      let transcriptFile = null
 
-      if (files.length === 0) {
+      // 戦略1: 会議ファイルと同じフォルダ内で文字起こしファイルを検索
+      if (meetingFile && meetingFile.parents && meetingFile.parents.length > 0) {
+        const parentFolder = meetingFile.parents[0]
+        console.log(`Searching in parent folder: ${parentFolder}`)
+        
+        const folderResponse = await this.drive.files.list({
+          q: `'${parentFolder}' in parents and (name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript' or mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 10
+        })
+        
+        const folderFiles = folderResponse.data.files || []
+        console.log(`Found ${folderFiles.length} files in parent folder`)
+        
+        if (folderFiles.length > 0) {
+          transcriptFile = folderFiles[0]
+        }
+      }
+
+      // 戦略2: 会議ファイル名に基づく類似名検索
+      if (!transcriptFile && meetingFile) {
+        const meetingBaseName = this.extractBaseName(meetingFile.name || '')
+        console.log(`Searching by meeting base name: ${meetingBaseName}`)
+        
+        const nameResponse = await this.drive.files.list({
+          q: `(name contains '${meetingBaseName}' or name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 10
+        })
+        
+        const nameFiles = nameResponse.data.files || []
+        console.log(`Found ${nameFiles.length} files by name search`)
+        
+        // 会議ファイルの作成日時に近いファイルを優先
+        if (nameFiles.length > 0 && meetingFile.createdTime) {
+          const meetingTime = new Date(meetingFile.createdTime).getTime()
+          nameFiles.sort((a, b) => {
+            const aTime = a.createdTime ? new Date(a.createdTime).getTime() : 0
+            const bTime = b.createdTime ? new Date(b.createdTime).getTime() : 0
+            return Math.abs(aTime - meetingTime) - Math.abs(bTime - meetingTime)
+          })
+          transcriptFile = nameFiles[0]
+        }
+      }
+
+      // 戦略3: フォールバック - 全体検索（従来の方法）
+      if (!transcriptFile) {
+        console.log('Falling back to global search')
+        const globalResponse = await this.drive.files.list({
+          q: `(name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 20
+        })
+
+        const globalFiles = globalResponse.data.files || []
+        console.log(`Found ${globalFiles.length} transcript files globally:`)
+        globalFiles.forEach((file, index) => {
+          console.log(`  ${index + 1}. ${file.name} (${file.mimeType}) - ${file.createdTime}`)
+        })
+
+        if (globalFiles.length > 0) {
+          transcriptFile = globalFiles[0]
+        }
+      }
+
+      // 戦略4: より広範囲な検索（mimeTypeの制限を緩和）
+      if (!transcriptFile) {
+        console.log('Trying broader search without mimeType restrictions')
+        const broadResponse = await this.drive.files.list({
+          q: `name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript' or name contains 'Meeting' or name contains 'meet'`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 50
+        })
+
+        const broadFiles = broadResponse.data.files || []
+        console.log(`Found ${broadFiles.length} files in broad search:`)
+        broadFiles.forEach((file, index) => {
+          console.log(`  ${index + 1}. ${file.name} (${file.mimeType}) - ${file.createdTime}`)
+        })
+
+        // 文字起こしらしいファイルを優先的に選択
+        const transcriptLikeFiles = broadFiles.filter(file => 
+          file.name && (
+            file.name.toLowerCase().includes('transcript') ||
+            file.name.includes('文字起こし') ||
+            file.name.toLowerCase().includes('meeting') && (
+              file.mimeType === 'text/plain' ||
+              file.mimeType === 'application/vnd.google-apps.document' ||
+              file.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            )
+          )
+        )
+
+        if (transcriptLikeFiles.length > 0) {
+          transcriptFile = transcriptLikeFiles[0]
+          console.log(`Selected transcript-like file: ${transcriptFile.name}`)
+        }
+      }
+
+      if (!transcriptFile) {
+        console.log('No transcript file found after all search strategies')
         return null
       }
 
-      // 最初の文字起こしファイルを使用
-      const transcriptFile = files[0]
+      console.log(`Selected transcript file:`, {
+        id: transcriptFile.id,
+        name: transcriptFile.name,
+        mimeType: transcriptFile.mimeType,
+        size: transcriptFile.size,
+        createdTime: transcriptFile.createdTime
+      })
       
       let content = ''
       try {
         // ファイルの内容を取得
+        console.log(`Attempting to fetch content for file type: ${transcriptFile.mimeType}`)
+        
         if (transcriptFile.mimeType === 'application/vnd.google-apps.document') {
           // Google Docs の場合は export で取得
+          console.log('Exporting Google Docs as plain text')
           const exportResponse = await this.drive.files.export({
             fileId: transcriptFile.id!,
             mimeType: 'text/plain'
           })
           content = exportResponse.data as string
+          console.log(`Exported content length: ${content.length} characters`)
         } else {
           // テキストファイルの場合は直接取得
+          console.log('Fetching file content directly')
           const fileResponse = await this.drive.files.get({
             fileId: transcriptFile.id!,
             alt: 'media'
           })
           content = fileResponse.data as string
+          console.log(`Fetched content length: ${content.length} characters`)
+        }
+        
+        // コンテンツの最初の100文字をログに出力（デバッグ用）
+        if (content) {
+          console.log(`Content preview: ${content.substring(0, 100)}...`)
         }
       } catch (contentError) {
-        console.log('Could not fetch file content:', contentError)
+        console.error('Could not fetch file content:', contentError)
         content = ''
       }
 
@@ -179,21 +323,152 @@ export class GoogleMeetAPI {
 
   async getAllTranscripts(meetingId: string): Promise<Transcript[]> {
     try {
-      console.log(`Fetching all transcript files for meeting: ${meetingId}`)
+      console.log(`=== getAllTranscripts for meeting: ${meetingId} ===`)
       
-      // Google Drive で文字起こしファイルを検索
-      const response = await this.drive.files.list({
-        q: `(name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document')`,
-        spaces: 'drive',
-        fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
-        orderBy: 'createdTime desc',
-        pageSize: 10
-      })
+      // まず会議ファイルの情報を取得
+      let meetingFile = null
+      try {
+        const meetingResponse = await this.drive.files.get({
+          fileId: meetingId,
+          fields: 'id,name,createdTime,parents,mimeType'
+        })
+        meetingFile = meetingResponse.data
+        console.log(`Meeting file found:`, {
+          id: meetingFile.id,
+          name: meetingFile.name,
+          mimeType: meetingFile.mimeType,
+          parents: meetingFile.parents,
+          createdTime: meetingFile.createdTime
+        })
+      } catch (error) {
+        console.log(`Meeting file not found: ${meetingId}`, error)
+      }
 
-      const files = response.data.files || []
+      let allFiles: Array<{
+        id?: string | null
+        name?: string | null  
+        createdTime?: string | null
+        modifiedTime?: string | null
+        size?: string | null
+        webViewLink?: string | null
+        mimeType?: string | null
+      }> = []
+
+      // 戦略1: 会議ファイルと同じフォルダ内で文字起こしファイルを検索
+      if (meetingFile && meetingFile.parents && meetingFile.parents.length > 0) {
+        const parentFolder = meetingFile.parents[0]
+        
+        const folderResponse = await this.drive.files.list({
+          q: `'${parentFolder}' in parents and (name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript' or mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 20
+        })
+        
+        allFiles = allFiles.concat(folderResponse.data.files || [])
+      }
+
+      // 戦略2: 会議ファイル名に基づく類似名検索
+      if (meetingFile) {
+        const meetingBaseName = this.extractBaseName(meetingFile.name || '')
+        
+        const nameResponse = await this.drive.files.list({
+          q: `(name contains '${meetingBaseName}' or name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 20
+        })
+        
+        allFiles = allFiles.concat(nameResponse.data.files || [])
+      }
+
+      // 戦略3: フォールバック - 全体検索
+      if (allFiles.length === 0) {
+        console.log('No files found in folder/name search, trying global search')
+        const globalResponse = await this.drive.files.list({
+          q: `(name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 20
+        })
+        
+        allFiles = globalResponse.data.files || []
+        console.log(`Global search found ${allFiles.length} files`)
+      }
+
+      // 戦略4: より広範囲な検索（mimeTypeの制限を緩和）
+      if (allFiles.length === 0) {
+        console.log('No files found in global search, trying broader search')
+        const broadResponse = await this.drive.files.list({
+          q: `name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript' or name contains 'Meeting' or name contains 'meet'`,
+          spaces: 'drive',
+          fields: 'files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType)',
+          orderBy: 'createdTime desc',
+          pageSize: 50
+        })
+        
+        const broadFiles = broadResponse.data.files || []
+        console.log(`Broad search found ${broadFiles.length} files`)
+        
+        // 文字起こしらしいファイルをフィルタリング
+        allFiles = broadFiles.filter(file => 
+          file.name && (
+            file.name.toLowerCase().includes('transcript') ||
+            file.name.includes('文字起こし') ||
+            (file.name.toLowerCase().includes('meeting') && (
+              file.mimeType === 'text/plain' ||
+              file.mimeType === 'application/vnd.google-apps.document' ||
+              file.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            ))
+          )
+        )
+        console.log(`Filtered to ${allFiles.length} transcript-like files`)
+      }
+
+      // 重複を除去し、会議ファイルの作成日時に近い順にソート
+      const uniqueFiles = allFiles.filter((file, index, self) => 
+        self.findIndex(f => f.id === file.id) === index
+      )
+
+      if (meetingFile && meetingFile.createdTime) {
+        const meetingTime = new Date(meetingFile.createdTime).getTime()
+        uniqueFiles.sort((a, b) => {
+          const aTime = a.createdTime ? new Date(a.createdTime).getTime() : 0
+          const bTime = b.createdTime ? new Date(b.createdTime).getTime() : 0
+          return Math.abs(aTime - meetingTime) - Math.abs(bTime - meetingTime)
+        })
+      }
+
       const results: Transcript[] = []
-
-      for (const file of files) {
+      for (const [index, file] of uniqueFiles.slice(0, 10).entries()) { // 最大10件に制限
+        let content = undefined
+        
+        // 最初のファイルのコンテンツを取得
+        if (index === 0 && file.id) {
+          try {
+            console.log(`Fetching content for first transcript: ${file.name}`)
+            if (file.mimeType === 'application/vnd.google-apps.document') {
+              const exportResponse = await this.drive.files.export({
+                fileId: file.id,
+                mimeType: 'text/plain'
+              })
+              content = exportResponse.data as string
+            } else {
+              const fileResponse = await this.drive.files.get({
+                fileId: file.id,
+                alt: 'media'
+              })
+              content = fileResponse.data as string
+            }
+            console.log(`Content fetched: ${content?.length || 0} characters`)
+          } catch (contentError) {
+            console.error(`Failed to fetch content for ${file.name}:`, contentError)
+          }
+        }
+        
         results.push({
           id: file.id || '',
           name: file.name || '',
@@ -202,10 +477,15 @@ export class GoogleMeetAPI {
           size: parseInt(file.size || '0'),
           webViewLink: file.webViewLink || undefined,
           downloadLink: `https://drive.google.com/uc?id=${file.id}`,
-          content: undefined // コンテンツは必要時に個別取得
+          content: content
         })
       }
 
+      console.log(`Found ${results.length} transcript files for meeting:`)
+      results.forEach((result, index) => {
+        console.log(`  ${index + 1}. ${result.name} (${result.id}) - ${result.createdTime}`)
+      })
+      
       return results
     } catch (error) {
       console.error('Error fetching all transcripts:', error)
