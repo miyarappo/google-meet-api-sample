@@ -118,31 +118,54 @@ export class GoogleMeetAPI {
     meetings: Meeting[]
   ): Promise<Meeting[]> {
     try {
-      console.log("Enriching meetings with calendar data...");
+      console.log("=== ENRICHING MEETINGS WITH CALENDAR DATA ===");
+      console.log(`Processing ${meetings.length} meetings`);
 
       // 過去30日間のカレンダーイベントを取得
       const timeMin = new Date();
       timeMin.setDate(timeMin.getDate() - 30);
+      console.log(`Searching calendar events from: ${timeMin.toISOString()}`);
 
+      // まず全てのイベントを取得（検索クエリなし）
       const calendarResponse = await this.calendar.events.list({
         calendarId: "primary",
         timeMin: timeMin.toISOString(),
         maxResults: 100,
         singleEvents: true,
         orderBy: "startTime",
-        q: "meet.google.com OR Google Meet", // Google Meet関連のイベントを検索
+        // q: "meet.google.com OR Google Meet", // 一旦コメントアウト
       });
 
       const events = calendarResponse.data.items || [];
-      console.log(`Found ${events.length} calendar events with Google Meet`);
+      console.log(`Found ${events.length} calendar events total`);
+      
+      // Google Meetイベントをフィルタリング
+      const meetEvents = events.filter(event => this.hasGoogleMeetLink(event));
+      console.log(`Found ${meetEvents.length} events with Google Meet links`);
+      
+      // デバッグ: 最初の5件のイベントを詳細表示
+      events.slice(0, 5).forEach((event, index) => {
+        console.log(`Event ${index + 1}:`, {
+          id: event.id,
+          summary: event.summary,
+          start: event.start?.dateTime || event.start?.date,
+          hasConferenceData: !!event.conferenceData,
+          hasMeetLink: this.hasGoogleMeetLink(event),
+          description: event.description?.substring(0, 100) + '...'
+        });
+      });
 
       // 各会議にカレンダー情報を紐付け
-      const enrichedMeetings = meetings.map((meeting) => {
-        const matchingEvent = this.findMatchingCalendarEvent(meeting, events);
+      const enrichedMeetings = meetings.map((meeting, index) => {
+        console.log(`\n--- Processing Meeting ${index + 1}: "${meeting.name}" ---`);
+        console.log(`Meeting created: ${meeting.createdTime}`);
+        console.log(`Meeting code: ${meeting.meetingCode || 'None'}`);
+        
+        const matchingEvent = this.findMatchingCalendarEvent(meeting, meetEvents);
 
         if (matchingEvent) {
           console.log(
-            `Matched meeting "${meeting.name}" with calendar event "${matchingEvent.summary}"`
+            `✅ MATCHED meeting "${meeting.name}" with calendar event "${matchingEvent.summary}"`
           );
           return {
             ...meeting,
@@ -171,14 +194,34 @@ export class GoogleMeetAPI {
                 })) || [],
             },
           };
+        } else {
+          console.log(`❌ NO MATCH found for meeting "${meeting.name}"`);
         }
 
         return meeting;
       });
 
+      const matchedCount = enrichedMeetings.filter(m => m.calendarEvent).length;
+      console.log(`\n=== SUMMARY ===`);
+      console.log(`Total meetings: ${meetings.length}`);
+      console.log(`Matched with calendar: ${matchedCount}`);
+      console.log(`Unmatched: ${meetings.length - matchedCount}`);
+
       return enrichedMeetings;
     } catch (error) {
-      console.error("Error enriching meetings with calendar data:", error);
+      console.error("=== ERROR ENRICHING MEETINGS WITH CALENDAR DATA ===");
+      console.error("Error details:", error);
+      
+      if (error instanceof Error) {
+        console.error("Error message:", error.message);
+        if (error.message.includes('insufficient authentication')) {
+          console.error("⚠️ Calendar API permission issue - user needs to re-authenticate");
+        }
+        if (error.message.includes('Calendar API has not been used')) {
+          console.error("⚠️ Calendar API not enabled in Google Cloud Console");
+        }
+      }
+      
       // カレンダー情報の取得に失敗しても、会議一覧は返す
       return meetings;
     }
