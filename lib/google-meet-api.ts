@@ -232,41 +232,122 @@ export class GoogleMeetAPI {
     events: any[]
   ): any | null {
     const meetingTime = new Date(meeting.createdTime);
+    console.log(`  Searching for matches...`);
+
+    // 会議ファイル名から基本部分を抽出（日時やファイル種別を除去）
+    const cleanMeetingName = this.extractMeetingBaseName(meeting.name);
+    console.log(`  Cleaned meeting name: "${cleanMeetingName}"`);
 
     // 複数の条件でマッチングを試行
     for (const event of events) {
+      let matchScore = 0;
+      let matchReasons: string[] = [];
+
       // 1. 会議コードでマッチング
       if (meeting.meetingCode && event.description) {
         if (event.description.includes(meeting.meetingCode)) {
-          return event;
+          matchScore += 100;
+          matchReasons.push(`meeting code: ${meeting.meetingCode}`);
         }
       }
 
-      // 2. 時間の近さでマッチング（同日かつGoogle Meetリンクあり）
+      // 2. 時間の近さでマッチング
       if (event.start?.dateTime) {
         const eventTime = new Date(event.start.dateTime);
         const timeDiff = Math.abs(eventTime.getTime() - meetingTime.getTime());
         const hoursDiff = timeDiff / (1000 * 60 * 60);
 
-        // 6時間以内かつGoogle Meetリンクがある
-        if (hoursDiff <= 6 && this.hasGoogleMeetLink(event)) {
-          return event;
+        if (hoursDiff <= 6) {
+          matchScore += Math.max(0, 50 - hoursDiff * 5); // 近いほど高得点
+          matchReasons.push(`time proximity: ${hoursDiff.toFixed(1)}h`);
         }
       }
 
-      // 3. ファイル名とイベント名の類似性
-      if (event.summary && meeting.name) {
-        const similarity = this.calculateStringSimilarity(
-          meeting.name.toLowerCase(),
-          event.summary.toLowerCase()
-        );
-        if (similarity > 0.6 && this.hasGoogleMeetLink(event)) {
+      // 3. ファイル名とイベント名の類似性（改善版）
+      if (event.summary && cleanMeetingName) {
+        const eventName = event.summary.toLowerCase();
+        const meetingNameLower = cleanMeetingName.toLowerCase();
+        
+        // 完全一致
+        if (eventName === meetingNameLower) {
+          matchScore += 80;
+          matchReasons.push('exact name match');
+        }
+        // 部分一致
+        else if (eventName.includes(meetingNameLower) || meetingNameLower.includes(eventName)) {
+          matchScore += 60;
+          matchReasons.push('partial name match');
+        }
+        // 共通キーワードの数
+        else {
+          const commonWords = this.countCommonWords(meetingNameLower, eventName);
+          if (commonWords > 0) {
+            matchScore += commonWords * 10;
+            matchReasons.push(`${commonWords} common words`);
+          }
+        }
+      }
+
+      // 4. Google Meetリンクの有無
+      if (this.hasGoogleMeetLink(event)) {
+        matchScore += 10;
+        matchReasons.push('has meet link');
+      }
+
+      // マッチスコアが閾値を超えた場合
+      if (matchScore >= 30) {
+        console.log(`  🎯 POTENTIAL MATCH with "${event.summary}" (score: ${matchScore})`);
+        console.log(`     Reasons: ${matchReasons.join(', ')}`);
+        
+        // 最初に見つかった有力候補を返す（後で改善可能）
+        if (matchScore >= 50) {
           return event;
         }
       }
     }
 
     return null;
+  }
+
+  private extractMeetingBaseName(fileName: string): string {
+    // ファイル名から基本的な会議名を抽出
+    let cleanName = fileName;
+    
+    // 日時パターンを除去（例: "2025/08/25 13:58 JST"）
+    cleanName = cleanName.replace(/\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}\s+JST/g, '');
+    
+    // ファイル種別を除去
+    cleanName = cleanName.replace(/～(Chat|Recording|Gemini によるメモ).*$/g, '');
+    cleanName = cleanName.replace(/\s+のコピー.*$/g, '');
+    cleanName = cleanName.replace(/\.(pdf|docx?|txt)$/i, '');
+    
+    // 余分な空白を除去
+    cleanName = cleanName.replace(/\s+/g, ' ').trim();
+    
+    return cleanName;
+  }
+
+  private countCommonWords(str1: string, str2: string): number {
+    // 意味のある単語のみを対象とする
+    const words1 = str1.split(/[\s\/\-_]+/).filter(word => 
+      word.length > 1 && !word.match(/^[\d\-_\/]+$/)
+    );
+    const words2 = str2.split(/[\s\/\-_]+/).filter(word => 
+      word.length > 1 && !word.match(/^[\d\-_\/]+$/)
+    );
+    
+    let commonCount = 0;
+    for (const word1 of words1) {
+      if (words2.some(word2 => 
+        word1.includes(word2) || word2.includes(word1) || 
+        (word1.length > 2 && word2.length > 2 && 
+         (word1.includes(word2.substring(0, 3)) || word2.includes(word1.substring(0, 3))))
+      )) {
+        commonCount++;
+      }
+    }
+    
+    return commonCount;
   }
 
   private extractMeetLinkFromEvent(event: any): string | undefined {
