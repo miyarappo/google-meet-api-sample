@@ -8,6 +8,24 @@ export interface Meeting {
   size?: number;
   webViewLink?: string;
   meetingCode?: string;
+  // カレンダー情報
+  calendarEvent?: {
+    eventId: string;
+    calendarId: string;
+    summary?: string;
+    startTime?: string;
+    endTime?: string;
+    meetLink?: string;
+    organizer?: {
+      email: string;
+      displayName?: string;
+    };
+    attendees?: Array<{
+      email: string;
+      displayName?: string;
+      responseStatus?: string;
+    }>;
+  };
 }
 
 export interface Transcript {
@@ -29,11 +47,13 @@ export interface TranscriptEntry {
 export class GoogleMeetAPI {
   private auth: InstanceType<typeof google.auth.OAuth2>;
   private drive: ReturnType<typeof google.drive>;
+  private calendar: ReturnType<typeof google.calendar>;
 
   constructor(accessToken: string) {
     this.auth = new google.auth.OAuth2();
     this.auth.setCredentials({ access_token: accessToken });
     this.drive = google.drive({ version: "v3", auth: this.auth });
+    this.calendar = google.calendar({ version: "v3", auth: this.auth });
   }
 
   async getMeetings(): Promise<Meeting[]> {
@@ -78,7 +98,12 @@ export class GoogleMeetAPI {
         }
       }
 
-      return meetings;
+      // カレンダーイベントとの紐付けを試行
+      const meetingsWithCalendar = await this.enrichMeetingsWithCalendarData(
+        meetings
+      );
+
+      return meetingsWithCalendar;
     } catch (error) {
       console.error("Error fetching Google Drive files:", error);
       throw new Error(
@@ -87,6 +112,168 @@ export class GoogleMeetAPI {
         }`
       );
     }
+  }
+
+  private async enrichMeetingsWithCalendarData(
+    meetings: Meeting[]
+  ): Promise<Meeting[]> {
+    try {
+      console.log("Enriching meetings with calendar data...");
+
+      // 過去30日間のカレンダーイベントを取得
+      const timeMin = new Date();
+      timeMin.setDate(timeMin.getDate() - 30);
+
+      const calendarResponse = await this.calendar.events.list({
+        calendarId: "primary",
+        timeMin: timeMin.toISOString(),
+        maxResults: 100,
+        singleEvents: true,
+        orderBy: "startTime",
+        q: "meet.google.com OR Google Meet", // Google Meet関連のイベントを検索
+      });
+
+      const events = calendarResponse.data.items || [];
+      console.log(`Found ${events.length} calendar events with Google Meet`);
+
+      // 各会議にカレンダー情報を紐付け
+      const enrichedMeetings = meetings.map((meeting) => {
+        const matchingEvent = this.findMatchingCalendarEvent(meeting, events);
+
+        if (matchingEvent) {
+          console.log(
+            `Matched meeting "${meeting.name}" with calendar event "${matchingEvent.summary}"`
+          );
+          return {
+            ...meeting,
+            calendarEvent: {
+              eventId: matchingEvent.id || "",
+              calendarId: "primary",
+              summary: matchingEvent.summary || "",
+              startTime:
+                matchingEvent.start?.dateTime ||
+                matchingEvent.start?.date ||
+                "",
+              endTime:
+                matchingEvent.end?.dateTime || matchingEvent.end?.date || "",
+              meetLink: this.extractMeetLinkFromEvent(matchingEvent),
+              organizer: matchingEvent.organizer
+                ? {
+                    email: matchingEvent.organizer.email || "",
+                    displayName: matchingEvent.organizer.displayName,
+                  }
+                : undefined,
+              attendees:
+                matchingEvent.attendees?.map((attendee) => ({
+                  email: attendee.email || "",
+                  displayName: attendee.displayName,
+                  responseStatus: attendee.responseStatus,
+                })) || [],
+            },
+          };
+        }
+
+        return meeting;
+      });
+
+      return enrichedMeetings;
+    } catch (error) {
+      console.error("Error enriching meetings with calendar data:", error);
+      // カレンダー情報の取得に失敗しても、会議一覧は返す
+      return meetings;
+    }
+  }
+
+  private findMatchingCalendarEvent(
+    meeting: Meeting,
+    events: any[]
+  ): any | null {
+    const meetingTime = new Date(meeting.createdTime);
+
+    // 複数の条件でマッチングを試行
+    for (const event of events) {
+      // 1. 会議コードでマッチング
+      if (meeting.meetingCode && event.description) {
+        if (event.description.includes(meeting.meetingCode)) {
+          return event;
+        }
+      }
+
+      // 2. 時間の近さでマッチング（同日かつGoogle Meetリンクあり）
+      if (event.start?.dateTime) {
+        const eventTime = new Date(event.start.dateTime);
+        const timeDiff = Math.abs(eventTime.getTime() - meetingTime.getTime());
+        const hoursDiff = timeDiff / (1000 * 60 * 60);
+
+        // 6時間以内かつGoogle Meetリンクがある
+        if (hoursDiff <= 6 && this.hasGoogleMeetLink(event)) {
+          return event;
+        }
+      }
+
+      // 3. ファイル名とイベント名の類似性
+      if (event.summary && meeting.name) {
+        const similarity = this.calculateStringSimilarity(
+          meeting.name.toLowerCase(),
+          event.summary.toLowerCase()
+        );
+        if (similarity > 0.6 && this.hasGoogleMeetLink(event)) {
+          return event;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private extractMeetLinkFromEvent(event: any): string | undefined {
+    // conferenceDataからMeetリンクを取得
+    if (event.conferenceData?.entryPoints) {
+      const meetEntry = event.conferenceData.entryPoints.find(
+        (entry: any) =>
+          entry.entryPointType === "video" &&
+          entry.uri?.includes("meet.google.com")
+      );
+      return meetEntry?.uri;
+    }
+
+    // descriptionからMeetリンクを抽出
+    if (event.description) {
+      const meetLinkMatch = event.description.match(
+        /https:\/\/meet\.google\.com\/[a-z\-]+/
+      );
+      return meetLinkMatch?.[0];
+    }
+
+    return undefined;
+  }
+
+  private hasGoogleMeetLink(event: any): boolean {
+    return !!(
+      event.conferenceData?.entryPoints?.some(
+        (entry: any) =>
+          entry.entryPointType === "video" &&
+          entry.uri?.includes("meet.google.com")
+      ) ||
+      (event.description && event.description.includes("meet.google.com"))
+    );
+  }
+
+  private calculateStringSimilarity(str1: string, str2: string): number {
+    const words1 = str1.split(/\s+/);
+    const words2 = str2.split(/\s+/);
+
+    let matches = 0;
+    for (const word1 of words1) {
+      if (
+        word1.length > 2 &&
+        words2.some((word2) => word2.includes(word1) || word1.includes(word2))
+      ) {
+        matches++;
+      }
+    }
+
+    return matches / Math.max(words1.length, words2.length);
   }
 
   private extractMeetingCode(fileName: string): string | undefined {
@@ -136,9 +323,10 @@ export class GoogleMeetAPI {
       const response = await this.drive.files.list({
         q: `(name contains 'transcript' OR name contains '文字起こし' OR name contains 'Transcript' OR name contains 'Meeting') AND (mimeType='text/plain' OR mimeType='application/vnd.google-apps.document' OR mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
         spaces: "drive",
-        fields: "files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType,parents)",
+        fields:
+          "files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType,parents)",
         orderBy: "createdTime desc",
-        pageSize: 50
+        pageSize: 50,
       });
 
       const files = response.data.files || [];
@@ -164,7 +352,7 @@ export class GoogleMeetAPI {
 
       // スコアベースで最適なファイルを選択
       const bestFile = this.selectBestTranscriptFile(files, meetingFile);
-      
+
       if (!bestFile) {
         console.log("No suitable transcript file found");
         return null;
@@ -199,14 +387,14 @@ export class GoogleMeetAPI {
     if (files.length === 0) return null;
 
     // 各ファイルにスコアを付与
-    const scoredFiles = files.map(file => ({
+    const scoredFiles = files.map((file) => ({
       file,
-      score: this.calculateRelevanceScore(file, meetingFile)
+      score: this.calculateRelevanceScore(file, meetingFile),
     }));
 
     // スコアの高い順にソート
     scoredFiles.sort((a, b) => b.score - a.score);
-    
+
     // デバッグ: 上位5件のスコアを表示
     console.log("Top transcript candidates:");
     scoredFiles.slice(0, 5).forEach((item, index) => {
@@ -218,35 +406,43 @@ export class GoogleMeetAPI {
 
   private calculateRelevanceScore(file: any, meetingFile: any): number {
     let score = 0;
-    const fileName = (file.name || '').toLowerCase();
-    
+    const fileName = (file.name || "").toLowerCase();
+
     // ファイル名による加点
-    if (fileName.includes('transcript')) score += 10;
-    if (fileName.includes('文字起こし')) score += 10;
-    if (fileName.includes('meeting')) score += 5;
-    
+    if (fileName.includes("transcript")) score += 10;
+    if (fileName.includes("文字起こし")) score += 10;
+    if (fileName.includes("meeting")) score += 5;
+
     // MIMEタイプによる加点
-    if (file.mimeType === 'application/vnd.google-apps.document') score += 3;
-    if (file.mimeType === 'text/plain') score += 2;
-    
+    if (file.mimeType === "application/vnd.google-apps.document") score += 3;
+    if (file.mimeType === "text/plain") score += 2;
+
     // 作成日時による加点（新しいほど高得点、10日以内）
     if (file.createdTime) {
-      const daysSinceCreation = (Date.now() - new Date(file.createdTime).getTime()) / (1000 * 60 * 60 * 24);
+      const daysSinceCreation =
+        (Date.now() - new Date(file.createdTime).getTime()) /
+        (1000 * 60 * 60 * 24);
       score += Math.max(0, 10 - daysSinceCreation);
     }
 
     // 会議ファイルとの関連性
     if (meetingFile) {
       // 同じフォルダにある場合は大幅加点
-      if (file.parents && meetingFile.parents && 
-          file.parents.some((p: string) => meetingFile.parents.includes(p))) {
+      if (
+        file.parents &&
+        meetingFile.parents &&
+        file.parents.some((p: string) => meetingFile.parents.includes(p))
+      ) {
         score += 15;
       }
 
       // 会議ファイル名との類似性
       if (meetingFile.name) {
         const meetingBaseName = this.extractBaseName(meetingFile.name);
-        if (meetingBaseName && fileName.includes(meetingBaseName.toLowerCase())) {
+        if (
+          meetingBaseName &&
+          fileName.includes(meetingBaseName.toLowerCase())
+        ) {
           score += 8;
         }
       }
@@ -260,16 +456,16 @@ export class GoogleMeetAPI {
         }
       }
     }
-    
+
     return score;
   }
 
   private async fetchFileContent(file: any): Promise<string> {
     try {
       console.log(`Fetching content for: ${file.name} (${file.mimeType})`);
-      
+
       let content = "";
-      
+
       if (file.mimeType === "application/vnd.google-apps.document") {
         // Google Docs の場合は export で取得
         const exportResponse = await this.drive.files.export({
@@ -285,12 +481,12 @@ export class GoogleMeetAPI {
         });
         content = fileResponse.data as string;
       }
-      
+
       console.log(`Content fetched: ${content.length} characters`);
       if (content && content.length > 0) {
         console.log(`Preview: ${content.substring(0, 100)}...`);
       }
-      
+
       return content;
     } catch (error) {
       console.error(`Failed to fetch content for ${file.name}:`, error);
