@@ -71,16 +71,18 @@ export class GoogleMeetAPI {
   async getMeetings(): Promise<Meeting[]> {
     try {
       console.log("Fetching Google Meet files from Google Drive...");
-      
+
       // Google Drive から Google Meet で生成されたファイルを検索
       const response = await this.drive.files.list({
-        q: "mimeType contains 'video' or name contains 'meeting' or name contains 'Meet' or name contains 'transcript'",
+        q: "name contains 'Gemini' and mimeType = 'application/vnd.google-apps.document'",
         spaces: "drive",
         fields:
           "files(id,name,createdTime,modifiedTime,size,webViewLink,mimeType,description,properties,appProperties,parents)",
         orderBy: "createdTime desc",
-        pageSize: 50,
+        pageSize: 5,
       });
+
+      console.log(response.data.files);
 
       const files = response.data.files || [];
       console.log(`Found ${files.length} potential meeting files`);
@@ -89,17 +91,23 @@ export class GoogleMeetAPI {
       const meetings: Meeting[] = [];
       const processedMeetings = new Set<string>();
 
-            for (const file of files) {
+      for (const file of files) {
         // ファイル名から会議コードを抽出（推定）
         const meetingCode = this.extractMeetingCode(file.name || "");
-        
+
         // より詳細な会議識別子を抽出
-        const meetingIdentifiers = this.extractMeetingIdentifiers(file.name || "");
-        
+        const meetingIdentifiers = this.extractMeetingIdentifiers(
+          file.name || ""
+        );
+
         // ファイルのメタデータから会議情報を抽出
         const meetingMetadata = this.extractMeetingMetadataFromFile(file);
-        
-        const meetingKey = meetingCode || meetingIdentifiers.meetingCode || file.createdTime || file.id;
+
+        const meetingKey =
+          meetingCode ||
+          meetingIdentifiers.meetingCode ||
+          file.createdTime ||
+          file.id;
 
         // 重複を避ける
         if (meetingKey && !processedMeetings.has(meetingKey)) {
@@ -160,11 +168,13 @@ export class GoogleMeetAPI {
 
       const events = calendarResponse.data.items || [];
       console.log(`Found ${events.length} calendar events total`);
-      
+
       // Google Meetイベントをフィルタリング
-      const meetEvents = events.filter(event => this.hasGoogleMeetLink(event));
+      const meetEvents = events.filter((event) =>
+        this.hasGoogleMeetLink(event)
+      );
       console.log(`Found ${meetEvents.length} events with Google Meet links`);
-      
+
       // デバッグ: 最初の5件のイベントを詳細表示
       events.slice(0, 5).forEach((event, index) => {
         console.log(`Event ${index + 1}:`, {
@@ -173,17 +183,22 @@ export class GoogleMeetAPI {
           start: event.start?.dateTime || event.start?.date,
           hasConferenceData: !!event.conferenceData,
           hasMeetLink: this.hasGoogleMeetLink(event),
-          description: event.description?.substring(0, 100) + '...'
+          description: event.description?.substring(0, 100) + "...",
         });
       });
 
       // 各会議にカレンダー情報を紐付け
       const enrichedMeetings = meetings.map((meeting, index) => {
-        console.log(`\n--- Processing Meeting ${index + 1}: "${meeting.name}" ---`);
+        console.log(
+          `\n--- Processing Meeting ${index + 1}: "${meeting.name}" ---`
+        );
         console.log(`Meeting created: ${meeting.createdTime}`);
-        console.log(`Meeting code: ${meeting.meetingCode || 'None'}`);
-        
-        const matchingEvent = this.findMatchingCalendarEvent(meeting, meetEvents);
+        console.log(`Meeting code: ${meeting.meetingCode || "None"}`);
+
+        const matchingEvent = this.findMatchingCalendarEvent(
+          meeting,
+          meetEvents
+        );
 
         if (matchingEvent) {
           console.log(
@@ -208,12 +223,12 @@ export class GoogleMeetAPI {
                     displayName: matchingEvent.organizer.displayName,
                   }
                 : undefined,
-                             attendees:
-                 matchingEvent.attendees?.map((attendee: any) => ({
-                   email: attendee.email || "",
-                   displayName: attendee.displayName,
-                   responseStatus: attendee.responseStatus,
-                 })) || [],
+              attendees:
+                matchingEvent.attendees?.map((attendee: any) => ({
+                  email: attendee.email || "",
+                  displayName: attendee.displayName,
+                  responseStatus: attendee.responseStatus,
+                })) || [],
             },
           };
         } else {
@@ -223,7 +238,9 @@ export class GoogleMeetAPI {
         return meeting;
       });
 
-      const matchedCount = enrichedMeetings.filter(m => m.calendarEvent).length;
+      const matchedCount = enrichedMeetings.filter(
+        (m) => m.calendarEvent
+      ).length;
       console.log(`\n=== SUMMARY ===`);
       console.log(`Total meetings: ${meetings.length}`);
       console.log(`Matched with calendar: ${matchedCount}`);
@@ -233,17 +250,19 @@ export class GoogleMeetAPI {
     } catch (error) {
       console.error("=== ERROR ENRICHING MEETINGS WITH CALENDAR DATA ===");
       console.error("Error details:", error);
-      
+
       if (error instanceof Error) {
         console.error("Error message:", error.message);
-        if (error.message.includes('insufficient authentication')) {
-          console.error("⚠️ Calendar API permission issue - user needs to re-authenticate");
+        if (error.message.includes("insufficient authentication")) {
+          console.error(
+            "⚠️ Calendar API permission issue - user needs to re-authenticate"
+          );
         }
-        if (error.message.includes('Calendar API has not been used')) {
+        if (error.message.includes("Calendar API has not been used")) {
           console.error("⚠️ Calendar API not enabled in Google Cloud Console");
         }
       }
-      
+
       // カレンダー情報の取得に失敗しても、会議一覧は返す
       return meetings;
     }
@@ -261,28 +280,33 @@ export class GoogleMeetAPI {
     console.log(`  Cleaned meeting name: "${cleanMeetingName}"`);
 
     // 会議ファイル名から会議IDやコードを抽出（保存済みのものを優先使用）
-    const meetingIdentifiers = meeting._meetingIdentifiers || this.extractMeetingIdentifiers(meeting.name);
+    const meetingIdentifiers =
+      meeting._meetingIdentifiers ||
+      this.extractMeetingIdentifiers(meeting.name);
     console.log(`  Extracted identifiers:`, meetingIdentifiers);
-    
+
     // ファイルのメタデータも確認
     if (meeting._meetingMetadata) {
       console.log(`  File metadata:`, {
         hasDescription: !!meeting._meetingMetadata.description,
         hasProperties: !!meeting._meetingMetadata.properties,
         hasAppProperties: !!meeting._meetingMetadata.appProperties,
-        parentFolders: meeting._meetingMetadata.parents?.length || 0
+        parentFolders: meeting._meetingMetadata.parents?.length || 0,
       });
     }
 
     // 複数の条件でマッチングを試行
     for (const event of events) {
       let matchScore = 0;
-      let matchReasons: string[] = [];
+      const matchReasons: string[] = [];
 
       // 1. 会議ID/コードでの確実なマッチング（最優先）
       const eventMeetingId = this.extractMeetingIdFromEvent(event);
-      if (eventMeetingId && meetingIdentifiers.meetingId && 
-          eventMeetingId === meetingIdentifiers.meetingId) {
+      if (
+        eventMeetingId &&
+        meetingIdentifiers.meetingId &&
+        eventMeetingId === meetingIdentifiers.meetingId
+      ) {
         matchScore += 200;
         matchReasons.push(`exact meeting ID: ${eventMeetingId}`);
       }
@@ -298,9 +322,14 @@ export class GoogleMeetAPI {
       // 3. ファイル名から抽出した会議コードでマッチング
       if (meetingIdentifiers.meetingCode) {
         const eventMeetLink = this.extractMeetLinkFromEvent(event);
-        if (eventMeetLink && eventMeetLink.includes(meetingIdentifiers.meetingCode)) {
+        if (
+          eventMeetLink &&
+          eventMeetLink.includes(meetingIdentifiers.meetingCode)
+        ) {
           matchScore += 150;
-          matchReasons.push(`extracted meeting code: ${meetingIdentifiers.meetingCode}`);
+          matchReasons.push(
+            `extracted meeting code: ${meetingIdentifiers.meetingCode}`
+          );
         }
       }
 
@@ -320,20 +349,26 @@ export class GoogleMeetAPI {
       if (event.summary && cleanMeetingName) {
         const eventName = event.summary.toLowerCase();
         const meetingNameLower = cleanMeetingName.toLowerCase();
-        
+
         // 完全一致
         if (eventName === meetingNameLower) {
           matchScore += 80;
-          matchReasons.push('exact name match');
+          matchReasons.push("exact name match");
         }
         // 部分一致
-        else if (eventName.includes(meetingNameLower) || meetingNameLower.includes(eventName)) {
+        else if (
+          eventName.includes(meetingNameLower) ||
+          meetingNameLower.includes(eventName)
+        ) {
           matchScore += 60;
-          matchReasons.push('partial name match');
+          matchReasons.push("partial name match");
         }
         // 共通キーワードの数
         else {
-          const commonWords = this.countCommonWords(meetingNameLower, eventName);
+          const commonWords = this.countCommonWords(
+            meetingNameLower,
+            eventName
+          );
           if (commonWords > 0) {
             matchScore += commonWords * 10;
             matchReasons.push(`${commonWords} common words`);
@@ -344,14 +379,16 @@ export class GoogleMeetAPI {
       // 4. Google Meetリンクの有無
       if (this.hasGoogleMeetLink(event)) {
         matchScore += 10;
-        matchReasons.push('has meet link');
+        matchReasons.push("has meet link");
       }
 
       // マッチスコアが閾値を超えた場合
       if (matchScore >= 30) {
-        console.log(`  🎯 POTENTIAL MATCH with "${event.summary}" (score: ${matchScore})`);
-        console.log(`     Reasons: ${matchReasons.join(', ')}`);
-        
+        console.log(
+          `  🎯 POTENTIAL MATCH with "${event.summary}" (score: ${matchScore})`
+        );
+        console.log(`     Reasons: ${matchReasons.join(", ")}`);
+
         // 最初に見つかった有力候補を返す（後で改善可能）
         if (matchScore >= 50) {
           return event;
@@ -365,41 +402,53 @@ export class GoogleMeetAPI {
   private extractMeetingBaseName(fileName: string): string {
     // ファイル名から基本的な会議名を抽出
     let cleanName = fileName;
-    
+
     // 日時パターンを除去（例: "2025/08/25 13:58 JST"）
-    cleanName = cleanName.replace(/\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}\s+JST/g, '');
-    
+    cleanName = cleanName.replace(
+      /\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}\s+JST/g,
+      ""
+    );
+
     // ファイル種別を除去
-    cleanName = cleanName.replace(/～(Chat|Recording|Gemini によるメモ).*$/g, '');
-    cleanName = cleanName.replace(/\s+のコピー.*$/g, '');
-    cleanName = cleanName.replace(/\.(pdf|docx?|txt)$/i, '');
-    
+    cleanName = cleanName.replace(
+      /～(Chat|Recording|Gemini によるメモ).*$/g,
+      ""
+    );
+    cleanName = cleanName.replace(/\s+のコピー.*$/g, "");
+    cleanName = cleanName.replace(/\.(pdf|docx?|txt)$/i, "");
+
     // 余分な空白を除去
-    cleanName = cleanName.replace(/\s+/g, ' ').trim();
-    
+    cleanName = cleanName.replace(/\s+/g, " ").trim();
+
     return cleanName;
   }
 
   private countCommonWords(str1: string, str2: string): number {
     // 意味のある単語のみを対象とする
-    const words1 = str1.split(/[\s\/\-_]+/).filter(word => 
-      word.length > 1 && !word.match(/^[\d\-_\/]+$/)
-    );
-    const words2 = str2.split(/[\s\/\-_]+/).filter(word => 
-      word.length > 1 && !word.match(/^[\d\-_\/]+$/)
-    );
-    
+    const words1 = str1
+      .split(/[\s\/\-_]+/)
+      .filter((word) => word.length > 1 && !word.match(/^[\d\-_\/]+$/));
+    const words2 = str2
+      .split(/[\s\/\-_]+/)
+      .filter((word) => word.length > 1 && !word.match(/^[\d\-_\/]+$/));
+
     let commonCount = 0;
     for (const word1 of words1) {
-      if (words2.some(word2 => 
-        word1.includes(word2) || word2.includes(word1) || 
-        (word1.length > 2 && word2.length > 2 && 
-         (word1.includes(word2.substring(0, 3)) || word2.includes(word1.substring(0, 3))))
-      )) {
+      if (
+        words2.some(
+          (word2) =>
+            word1.includes(word2) ||
+            word2.includes(word1) ||
+            (word1.length > 2 &&
+              word2.length > 2 &&
+              (word1.includes(word2.substring(0, 3)) ||
+                word2.includes(word1.substring(0, 3))))
+        )
+      ) {
         commonCount++;
       }
     }
-    
+
     return commonCount;
   }
 
@@ -450,8 +499,13 @@ export class GoogleMeetAPI {
     // conferenceDataのentryPointsから会議コードを取得
     if (event.conferenceData?.entryPoints) {
       for (const entry of event.conferenceData.entryPoints) {
-        if (entry.entryPointType === 'video' && entry.uri?.includes('meet.google.com')) {
-          const meetCodeMatch = entry.uri.match(/meet\.google\.com\/([a-z\-]+)/i);
+        if (
+          entry.entryPointType === "video" &&
+          entry.uri?.includes("meet.google.com")
+        ) {
+          const meetCodeMatch = entry.uri.match(
+            /meet\.google\.com\/([a-z\-]+)/i
+          );
           if (meetCodeMatch) {
             return meetCodeMatch[1];
           }
@@ -461,7 +515,9 @@ export class GoogleMeetAPI {
 
     // descriptionから会議コードを抽出
     if (event.description) {
-      const meetLinkMatch = event.description.match(/meet\.google\.com\/([a-z\-]+)/i);
+      const meetLinkMatch = event.description.match(
+        /meet\.google\.com\/([a-z\-]+)/i
+      );
       if (meetLinkMatch) {
         return meetLinkMatch[1];
       }
@@ -541,14 +597,14 @@ export class GoogleMeetAPI {
       /meet\.google\.com\/([a-z\-]+)/i, // URL形式
       /Meeting\s+([A-Z0-9\-]+)/i, // Meeting XXX 形式
     ];
-    
+
     for (const pattern of patterns) {
       const match = fileName.match(pattern);
       if (match) {
         return match[1];
       }
     }
-    
+
     return undefined;
   }
 
@@ -725,15 +781,15 @@ export class GoogleMeetAPI {
       let content = "";
 
       if (file.mimeType === "application/vnd.google-apps.document") {
-          // Google Docs の場合は export で取得
-          const exportResponse = await this.drive.files.export({
+        // Google Docs の場合は export で取得
+        const exportResponse = await this.drive.files.export({
           fileId: file.id!,
           mimeType: "text/plain",
         });
         content = exportResponse.data as string;
-        } else {
-          // テキストファイルの場合は直接取得
-          const fileResponse = await this.drive.files.get({
+      } else {
+        // テキストファイルの場合は直接取得
+        const fileResponse = await this.drive.files.get({
           fileId: file.id!,
           alt: "media",
         });
@@ -755,7 +811,7 @@ export class GoogleMeetAPI {
   async getAllTranscripts(meetingId: string): Promise<Transcript[]> {
     try {
       console.log(`=== getAllTranscripts for meeting: ${meetingId} ===`);
-      
+
       // まず会議ファイルの情報を取得
       let meetingFile = null;
       try {
@@ -792,7 +848,7 @@ export class GoogleMeetAPI {
         meetingFile.parents.length > 0
       ) {
         const parentFolder = meetingFile.parents[0];
-        
+
         const folderResponse = await this.drive.files.list({
           q: `'${parentFolder}' in parents and (name contains 'transcript' or name contains '文字起こし' or name contains 'Transcript' or mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
           spaces: "drive",
@@ -808,7 +864,7 @@ export class GoogleMeetAPI {
       // 戦略2: 会議ファイル名に基づく類似名検索
       if (meetingFile) {
         const meetingBaseName = this.extractBaseName(meetingFile.name || "");
-        
+
         const nameResponse = await this.drive.files.list({
           q: `(name contains '${meetingBaseName}' or name contains 'transcript' or name contains '文字起こし') and (mimeType='text/plain' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`,
           spaces: "drive",
@@ -958,7 +1014,7 @@ export class GoogleMeetAPI {
       const timestampMatch = line.match(
         /^\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*(.+)$/
       );
-      
+
       if (timestampMatch) {
         entries.push({
           text: timestampMatch[2].trim(),
